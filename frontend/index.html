@@ -10,11 +10,20 @@
   <nav>
     <a href="#home">Главная</a>
     <a href="#page1">Page 1</a>
+    <a href="#individuals">Физлица</a>
+    <a href="#staffers">Сотрудники</a>
   </nav>
   <div id="app"></div>
   <script src="js/main.js"></script>
   <script>
-    await render();
+    window.addEventListener('DOMContentLoaded', () => {
+      if (typeof render === 'function') {
+        render();
+      }
+    });
   </script>
+
+  <div id="loading-overlay"><div class="loader"></div></div>
+  <div id="toast"></div>
 </body>
-</html> 
+</html>

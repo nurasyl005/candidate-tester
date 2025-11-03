@@ -1,4 +1,119 @@
 // main.js - Главный файл и главная страница
+const codeInput = document.querySelector('#code');
+const codeError = document.querySelector('#code-error');
+
+const CODE_RE = /^[A-Za-z0-9-]{3,}$/;
+let codeCheckTimer;
+
+function fmt(ts) {
+  return new Date(ts).toLocaleString(); 
+}
+
+// --- UI helpers: loading overlay, toasts, and UI state persistence ---
+let toastTimer;
+
+function showLoading(on) {
+  const overlay = document.getElementById('loading-overlay');
+  if (!overlay) return;
+  overlay.style.display = on ? 'flex' : 'none';
+}
+
+function showToast(message, type = 'success', ms = 2000) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.className = '';
+  el.classList.add(type === 'error' ? 'error' : 'success');
+  el.textContent = message;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, ms);
+}
+
+// Persist/restore UI state across reloads
+function saveUIState() {
+  try {
+    localStorage.setItem('cat1_state', JSON.stringify({
+      limit: state.limit, sort: state.sort, dir: state.dir, deleted: state.deleted
+    }));
+  } catch {}
+}
+function loadUIState() {
+  try {
+    const s = JSON.parse(localStorage.getItem('cat1_state') || '{}');
+    if (s && typeof s === 'object') {
+      if (s.limit) state.limit = s.limit;
+      if (s.sort) state.sort = s.sort;
+      if (s.dir) state.dir = s.dir;
+      if (typeof s.deleted === 'boolean') state.deleted = s.deleted;
+    }
+  } catch {}
+}
+
+
+const search = document.querySelector('#search');
+let searchTimer;
+if (search) {
+  search.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => reload({ q: search.value.trim(), page: 1 }), 300);
+  });
+}
+
+
+if (codeInput) {
+  codeInput.addEventListener('input', () => {
+    clearTimeout(codeCheckTimer);
+    const v = codeInput.value.trim();
+
+    if (!CODE_RE.test(v)) {
+      codeError.textContent = 'Мин. 3 символа, только латиница/цифры/дефис';
+      codeError.hidden = false;
+      return;
+    } else {
+      codeError.hidden = true;
+    }
+
+    // debounce uniqueness check
+    codeCheckTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/cat1/exists?code=${encodeURIComponent(v)}`);
+        const { exists } = await r.json();
+        if (exists) {
+          codeError.textContent = 'Код уже используется';
+          codeError.hidden = false;
+        } else {
+          codeError.hidden = true;
+        }
+      } catch (e) {
+        console.error('exists check failed', e);
+      }
+    }, 300);
+  });
+}
+// Shared table state (search/pagination/sort)
+const state = {
+  q: '',
+  page: 1,
+  limit: 10,
+  sort: 'cat1__id',
+  dir: 'asc',
+  deleted: false,
+};
+// Initialize saved UI state early (before first render from index.html)
+loadUIState();
+
+async function reload(partial = {}) {
+  Object.assign(state, partial);
+  saveUIState();
+  showLoading(true);
+  try {
+    if (typeof nomenclatureManager?.loadData === 'function') {
+      await nomenclatureManager.loadData();
+    }
+  } finally {
+    showLoading(false);
+  }
+}
 
 // Массив для хранения загруженных скриптов
 let loadedScripts = [];
@@ -55,10 +170,28 @@ const TABLE_CONFIG = {
       align: 'center',
       visible: true
     },
+    code: {
+      title: 'Код',
+      width: '160px',
+      align: 'left',
+      visible: true
+    },
     represent: {
       title: 'Название',
       width: 'auto',
       align: 'left',
+      visible: true
+    },
+    insertdate: {
+      title: 'Создано',
+      width: '160px',
+      align: 'center',
+      visible: true
+    },
+    updatedate: {
+      title: 'Изменено',
+      width: '160px',
+      align: 'center',
       visible: true
     }
   },
@@ -77,6 +210,15 @@ const TABLE_CONFIG = {
   }
 };
 
+// Map visible column keys to backend sort fields
+const SORT_FIELD_MAP = {
+  id: 'cat1__id',
+  code: 'cat1__code',
+  represent: 'cat1__represent',
+  insertdate: 'cat1__insertdate',
+  updatedate: 'cat1__updatedate'
+};
+
 // Класс для работы с API
 class ApiClient {
   static async request(endpoint, data) {
@@ -89,7 +231,29 @@ class ApiClient {
   }
 
   static async getNomenclature() {
-    return await this.request('/api', { type: 'nomenclature' });
+    const params = new URLSearchParams({
+      q: state.q,
+      page: String(state.page),
+      limit: String(state.limit),
+      sort: state.sort,
+      dir: state.dir,
+      deleted: state.deleted ? 'true' : 'false',
+    });
+    const res = await fetch(`/api/cat1?${params.toString()}`);
+    const json = await res.json();
+
+    // Map backend fields to frontend table expectations
+    const data = Array.isArray(json.items) ? json.items.map(r => ({
+      id: r.cat1__id,
+      uuid: r.cat1__uuid,
+      code: r.cat1__code,
+      represent: r.cat1__represent,
+      insertdate: r.cat1__insertdate,
+      updatedate: r.cat1__updatedate,
+      deleted: r.cat1__deleted === true
+    })) : [];
+
+    return { status: 200, data, meta: { total: json.total, page: json.page, limit: json.limit, sort: json.sort, dir: json.dir } };
   }
 
   static async getMetadata(table) {
@@ -110,6 +274,18 @@ class ApiClient {
 
   static async deleteInstance(table, uuid) {
     return await this.request('/api/instance/delete', { table, uuid });
+  }
+
+  static async softDelete(uuid) {
+    const res = await fetch(`/api/cat1/${uuid}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Не удалось удалить запись');
+    return await res.json();
+  }
+
+  static async restoreItem(uuid) {
+    const res = await fetch(`/api/cat1/${uuid}/restore`, { method: 'PUT' });
+    if (!res.ok) throw new Error('Не удалось восстановить запись');
+    return await res.json();
   }
 }
 
@@ -177,17 +353,46 @@ class TableManager {
 
     Object.entries(this.config.columns).forEach(([fieldName, config]) => {
       if (!config.visible) return;
-      
+
       const th = document.createElement('th');
-      th.textContent = config.title;
-      
+      th.dataset.field = fieldName;
+      th.style.userSelect = 'none';
+      th.style.cursor = 'pointer';
+
+      // Base title
+      let title = config.title;
+
+      // Show current sort indicator if this column is active
+      const backendField = SORT_FIELD_MAP[fieldName];
+      if (backendField && state.sort === backendField) {
+        title += state.dir === 'asc' ? ' ▲' : ' ▼';
+      }
+      th.textContent = title;
+
       const cellStyles = { ...this.config.cellStyle };
       if (config.width) cellStyles.width = config.width;
       if (config.align) cellStyles.textAlign = config.align;
-      
       th.style.cssText = this.getStyleString(cellStyles);
+
+      // Click to sort
+      th.addEventListener('click', () => {
+        const sortField = SORT_FIELD_MAP[fieldName];
+        if (!sortField) return;
+        const nextDir = (state.sort === sortField && state.dir === 'asc') ? 'desc' : 'asc';
+        reload({ sort: sortField, dir: nextDir, page: 1 });
+      });
+
       row.appendChild(th);
     });
+
+    // Добавляем колонку действий
+    const thAct = document.createElement('th');
+    thAct.textContent = 'Действия';
+    const actCellStyles = { ...this.config.cellStyle };
+    actCellStyles.width = '160px';
+    actCellStyles.textAlign = 'center';
+    thAct.style.cssText = this.getStyleString(actCellStyles);
+    row.appendChild(thAct);
 
     return row;
   }
@@ -198,35 +403,67 @@ class TableManager {
       cursor: pointer;
       transition: background-color 0.2s;
     `;
-    
-    // Hover эффект
+
+    if (row.deleted) {
+      dataRow.classList.add('deleted');
+    }
+
+    // Hover эффект (не переопределяем .deleted стили)
     dataRow.addEventListener('mouseenter', () => {
       dataRow.style.backgroundColor = '#f0f8ff';
     });
     dataRow.addEventListener('mouseleave', () => {
       dataRow.style.backgroundColor = '';
     });
-    
+
     // Клик по строке
     dataRow.addEventListener('click', () => {
       modalManager.openEditModal(row.uuid);
     });
-    
+
     // Создаем ячейки
     Object.entries(this.config.columns).forEach(([fieldName, config]) => {
       if (!config.visible) return;
-      
+
       const td = document.createElement('td');
-      td.textContent = row[fieldName] || '';
-      
+      if (fieldName === 'insertdate' || fieldName === 'updatedate') {
+        td.textContent = row[fieldName] ? fmt(row[fieldName]) : '';
+      } else {
+        td.textContent = row[fieldName] || '';
+      }
+
       const cellStyles = { ...this.config.cellStyle };
       if (config.width) cellStyles.width = config.width;
       if (config.align) cellStyles.textAlign = config.align;
-      
+
       td.style.cssText = this.getStyleString(cellStyles);
       dataRow.appendChild(td);
     });
-    
+
+    // Ячейка действий
+    const tdAct = document.createElement('td');
+    const cellStylesAct = { ...this.config.cellStyle, textAlign: 'center' };
+    tdAct.style.cssText = this.getStyleString(cellStylesAct);
+
+    const btn = document.createElement('button');
+    if (row.deleted) {
+      btn.textContent = 'Восстановить';
+      btn.className = 'btn btn-info';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.restoreItem(row.uuid, e.currentTarget);
+      });
+    } else {
+      btn.textContent = 'Удалить';
+      btn.className = 'btn btn-danger';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.deleteItem(row.uuid, e.currentTarget);
+      });
+    }
+    tdAct.appendChild(btn);
+    dataRow.appendChild(tdAct);
+
     return dataRow;
   }
 
@@ -235,6 +472,80 @@ class TableManager {
       .map(([key, value]) => `${key.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${value}`)
       .join('; ');
   }
+}
+
+// --- Pagination UI ---
+function renderPager(total, page, limit) {
+  const container = document.getElementById('nomenclature-container');
+  if (!container) return;
+
+  let pager = document.getElementById('pager');
+  if (!pager) {
+    pager = document.createElement('div');
+    pager.id = 'pager';
+    pager.style.cssText = 'display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;';
+    container.appendChild(pager);
+  }
+
+  const pages = Math.max(1, Math.ceil((total || 0) / (limit || 1)));
+
+  // If all data fits on one page, hide pager
+  if (pages <= 1) {
+    pager.innerHTML = '';
+    pager.style.display = 'none';
+    return;
+  }
+  pager.style.display = 'flex';
+
+  const makeBtn = (label, targetPage, disabled = false, active = false) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.disabled = disabled;
+    b.style.cssText = `
+      padding:6px 10px;border:1px solid #ddd;background:${active ? '#007bff' : '#fff'};
+      color:${active ? '#fff' : '#333'};border-radius:4px;cursor:${disabled ? 'not-allowed' : 'pointer'};
+    `;
+    if (!disabled) {
+      b.addEventListener('click', () => reload({ page: targetPage }));
+    }
+    return b;
+  };
+
+  pager.innerHTML = '';
+
+  const pagesWindow = 5;
+  const current = Number(page) || 1;
+
+  pager.appendChild(makeBtn('« Prev', Math.max(1, current - 1), current <= 1));
+
+  const totalPages = pages;
+  let start = Math.max(1, current - 2);
+  let end = Math.min(totalPages, start + pagesWindow - 1);
+  if (end - start < pagesWindow - 1) start = Math.max(1, end - pagesWindow + 1);
+
+  if (start > 1) {
+    pager.appendChild(makeBtn('1', 1, false, current === 1));
+    if (start > 2) {
+      const span = document.createElement('span');
+      span.textContent = '...';
+      pager.appendChild(span);
+    }
+  }
+
+  for (let p = start; p <= end; p++) {
+    pager.appendChild(makeBtn(String(p), p, false, p === current));
+  }
+
+  if (end < totalPages) {
+    if (end < totalPages - 1) {
+      const span = document.createElement('span');
+      span.textContent = '...';
+      pager.appendChild(span);
+    }
+    pager.appendChild(makeBtn(String(totalPages), totalPages, false, current === totalPages));
+  }
+
+  pager.appendChild(makeBtn('Next »', Math.min(totalPages, current + 1), current >= totalPages));
 }
 
 // Класс для управления модальными окнами
@@ -467,16 +778,11 @@ class ModalManager {
 
   async handleDelete(uuid) {
     if (!confirm('Вы уверены что хотите удалить эту запись?')) return;
-    
     try {
-      const result = await ApiClient.deleteInstance('nomenclature', uuid);
-      if (result.status === 200) {
-        alert('Запись успешно удалена');
-        this.close();
-        nomenclatureManager.loadData();
-      } else {
-        alert(`Ошибка удаления: ${result.message}`);
-      }
+      await ApiClient.softDelete(uuid);
+      alert('Запись помечена как удалённая');
+      this.close();
+      await reload();
     } catch (error) {
       alert(`Ошибка: ${error.message}`);
     }
@@ -535,6 +841,41 @@ class ModalManager {
   }
 }
 
+// Глобальные функции для удаления и восстановления
+async function deleteItem(uuid, btn) {
+  if (!confirm('Удалить запись?')) return;
+  try {
+    if (btn) btn.disabled = true;
+    showLoading(true);
+    await ApiClient.softDelete(uuid);
+    showToast('Запись помечена как удалённая', 'success');
+    await reload();
+  } catch (e) {
+    showToast(e.message || 'Ошибка удаления', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+    showLoading(false);
+  }
+}
+
+async function restoreItem(uuid, btn) {
+  try {
+    if (btn) btn.disabled = true;
+    showLoading(true);
+    await ApiClient.restoreItem(uuid);
+    showToast('Запись восстановлена', 'success');
+    await reload({ deleted: true }); // остаёмся в режиме показа удалённых
+  } catch (e) {
+    showToast(e.message || 'Ошибка восстановления', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+    showLoading(false);
+  }
+}
+
+window.deleteItem = deleteItem;
+window.restoreItem = restoreItem;
+
 // Класс для управления номенклатурой
 class NomenclatureManager {
   constructor() {
@@ -568,7 +909,9 @@ class NomenclatureManager {
       }
       
       this.tableManager.render(result.data);
-      
+      if (result.meta) {
+        renderPager(result.meta.total, result.meta.page, result.meta.limit);
+      }
     } catch (error) {
       this.container.innerHTML = `<p style='color:red'>Ошибка: ${error.message}</p>`;
     }
@@ -626,12 +969,50 @@ async function createHomePage() {
   const description = document.createElement('p');
   description.textContent = 'Добро пожаловать! Кликните на строку в таблице для редактирования';
   description.style.marginBottom = '20px';
-  
+
+  // Переключатель показа удалённых
+  const showDeletedWrap = document.createElement('label');
+  showDeletedWrap.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-bottom:10px;';
+  const showDeleted = document.createElement('input');
+  showDeleted.type = 'checkbox';
+  showDeleted.id = 'showDeleted';
+  showDeleted.checked = state.deleted;
+  const showDeletedText = document.createElement('span');
+  showDeletedText.textContent = 'Показать удаленные';
+  showDeletedWrap.appendChild(showDeleted);
+  showDeletedWrap.appendChild(showDeletedText);
+  showDeleted.addEventListener('change', (e) => {
+    reload({ deleted: e.target.checked, page: 1 });
+  });
+
+  // Селектор "Строк на странице"
+  const pageSizeWrap = document.createElement('label');
+  pageSizeWrap.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:16px;margin-bottom:10px;';
+  const pageSizeText = document.createElement('span');
+  pageSizeText.textContent = 'Строк на странице:';
+  const pageSize = document.createElement('select');
+  pageSize.id = 'rowsPerPage';
+  ['2','5','10','20','50'].forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v;
+    if (Number(v) === Number(state.limit)) opt.selected = true;
+    pageSize.appendChild(opt);
+  });
+  pageSize.addEventListener('change', (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!Number.isNaN(val)) reload({ limit: val, page: 1 });
+  });
+  pageSizeWrap.appendChild(pageSizeText);
+  pageSizeWrap.appendChild(pageSize);
+
   const loadingDiv = document.createElement('div');
   loadingDiv.id = 'nomenclature-container';
   
   homeContainer.appendChild(title);
   homeContainer.appendChild(description);
+  homeContainer.appendChild(showDeletedWrap);
+  homeContainer.appendChild(pageSizeWrap);
   homeContainer.appendChild(loadingDiv);
   app.appendChild(homeContainer);
   
@@ -653,7 +1034,9 @@ async function loadAndCreatePage(pageName, createFunctionName) {
   
   try {
     await loadPageScript(pageName);
-    app.removeChild(loadingDiv);
+    if (loadingDiv && loadingDiv.parentNode) {
+      loadingDiv.parentNode.removeChild(loadingDiv);
+    }
     
     if (typeof window[createFunctionName] === 'function') {
       const pageElement = await window[createFunctionName]();
@@ -675,6 +1058,12 @@ const routes = {
   },
   page1: async () => {
     await loadAndCreatePage('page1', 'createPage1');
+  },
+  individuals: async () => {
+    await loadAndCreatePage('individuals', 'createIndividualsPage');
+  },
+  staffers: async () => {
+    await loadAndCreatePage('staffers', 'createStaffersPage');
   }
 };
 
@@ -696,4 +1085,3 @@ async function render() {
 
 // Инициализация
 window.addEventListener('hashchange', render);
-window.addEventListener('DOMContentLoaded', render); 
