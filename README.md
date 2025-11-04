@@ -122,6 +122,11 @@ candidate-tester/
 | **Физлица** | Управление записями физических лиц (ИИН, имя и др.) |
 | **Сотрудники** | Управление сотрудниками, связанными с физлицами |
 
+<img width="1440" height="615" alt="Screenshot 2025-11-04 at 02 12 19" src="https://github.com/user-attachments/assets/ac7ff657-e88d-4738-a917-ee73e1534d0d" />
+<img width="1440" height="776" alt="Screenshot 2025-11-04 at 02 12 42" src="https://github.com/user-attachments/assets/e99098f7-4681-4829-b92a-36d1e482726d" />
+<img width="1440" height="619" alt="Screenshot 2025-11-04 at 02 12 56" src="https://github.com/user-attachments/assets/4c3d79b0-bf9d-4524-be88-b8f8b93cc976" />
+<img width="1440" height="623" alt="Screenshot 2025-11-04 at 02 13 07" src="https://github.com/user-attachments/assets/ed00b44d-a27a-4b31-9d8e-8eb7c4f8d7d8" />
+
 ---
 
 ## 💡 Ключевые моменты
